@@ -1,0 +1,5 @@
+.kivy/
+__pycache__/
+*.pyc
+data/
+database/*.db
