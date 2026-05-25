@@ -1,6 +1,26 @@
 """
 MVP app entry integrating Bookshelf, Search, and Reader with ScreenManager.
 """
+
+import sys
+import traceback
+from pathlib import Path
+
+def crash_handler(exc_type, exc_value, exc_tb):
+    log_path = Path("/sdcard/novel_reader_error.txt")
+    try:
+        with open(log_path, "w", encoding="utf-8") as f:
+            traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+    except Exception:
+        # sdcard写不了就写到app目录
+        from android.storage import app_storage_path
+        log_path = Path(app_storage_path()) / "error.txt"
+        with open(log_path, "w", encoding="utf-8") as f:
+            traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+
+sys.excepthook = crash_handler
+
+
 from __future__ import annotations
 
 import logging
