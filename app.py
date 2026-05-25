@@ -6,20 +6,38 @@ import sys
 import traceback
 from pathlib import Path
 
+
 def crash_handler(exc_type, exc_value, exc_tb):
-    log_path = Path("/sdcard/novel_reader_error.txt")
     try:
+        # 安卓 sdcard
+        log_path = Path("/sdcard/novel_reader_error.txt")
+
         with open(log_path, "w", encoding="utf-8") as f:
-            traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+            traceback.print_exception(
+                exc_type,
+                exc_value,
+                exc_tb,
+                file=f
+            )
+
     except Exception:
-        # sdcard写不了就写到app目录
-        from android.storage import app_storage_path
-        log_path = Path(app_storage_path()) / "error.txt"
-        with open(log_path, "w", encoding="utf-8") as f:
-            traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+        try:
+            # fallback 当前目录
+            log_path = Path("novel_reader_error.txt")
+
+            with open(log_path, "w", encoding="utf-8") as f:
+                traceback.print_exception(
+                    exc_type,
+                    exc_value,
+                    exc_tb,
+                    file=f
+                )
+
+        except Exception:
+            pass
+
 
 sys.excepthook = crash_handler
-
 
 from __future__ import annotations
 
