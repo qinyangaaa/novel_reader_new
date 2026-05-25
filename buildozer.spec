@@ -10,7 +10,7 @@ source.exclude_dirs = .git,__pycache__,.kivy,data
 
 version = 0.1.0
 
-requirements = python3,kivy,requests,beautifulsoup4,trafilatura==1.6.1
+requirements = python3,kivy,requests,beautifulsoup4,lxml
 
 orientation = portrait
 fullscreen = 0
