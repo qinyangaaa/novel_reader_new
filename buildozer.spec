@@ -6,7 +6,7 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,db,json
 source.exclude_dirs = .git,__pycache__,.kivy,data
 version = 0.1.0
-requirements = python3==3.11.9,kivy==2.2.1,requests,beautifulsoup4,trafilatura
+requirements = python3,kivy==2.2.1,requests,beautifulsoup4
 orientation = portrait
 fullscreen = 0
 
