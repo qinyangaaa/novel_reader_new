@@ -2,6 +2,8 @@
 MVP app entry integrating Bookshelf, Search, and Reader with ScreenManager.
 """
 
+from __future__ import annotations
+
 import sys
 import traceback
 from pathlib import Path
@@ -39,7 +41,7 @@ def crash_handler(exc_type, exc_value, exc_tb):
 
 sys.excepthook = crash_handler
 
-from __future__ import annotations
+
 
 import logging
 import os
