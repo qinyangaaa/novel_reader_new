@@ -10,16 +10,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build with ArtemSBulgakov action
-        uses: ArtemSBulgakov/buildozer-action@v1
-        id: buildozer
-        with:
-          command: android debug
-          buildozer_version: stable
+      - name: Install system dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y git zip unzip python3-pip python3-dev \
+            autoconf libtool pkg-config zlib1g-dev libncurses5-dev \
+            libncursesw5-dev cmake libffi-dev libssl-dev openjdk-17-jdk
+
+      - name: Install buildozer
+        run: |
+          pip3 install buildozer cython
+
+      - name: Patch python-for-android hostpython version
+        run: |
+          P4A_PATH=$(python3 -c "import pythonforandroid; import os; print(os.path.dirname(pythonforandroid.__file__))")
+          echo "p4a path: $P4A_PATH"
+          # 找到 hostpython3 recipe 文件并修改版本
+          RECIPE="$P4A_PATH/recipes/hostpython3/__init__.py"
+          cat $RECIPE | grep version
+          sed -i "s/version = .*/version = '3.11.9'/" $RECIPE
+          cat $RECIPE | grep version
+
+      - name: Build APK
+        run: buildozer android debug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: novel-reader-apk
-          path: ${{ steps.buildozer.outputs.filename }}
+          path: bin/*.apk
           if-no-files-found: error
