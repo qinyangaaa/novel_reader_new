@@ -6,15 +6,20 @@ source.dir = .
 source.include_exts = py,png,jpg,kv,atlas,db,json
 source.exclude_dirs = .git,__pycache__,.kivy,data
 version = 0.1.0
-requirements = python3,kivy==2.2.1,requests,beautifulsoup4,trafilatura
+requirements = python3==3.11.6,kivy==2.2.1,requests,beautifulsoup4,trafilatura
 orientation = portrait
 fullscreen = 0
 
+
+
+
+
 android.permissions = INTERNET,WRITE_EXTERNAL_STORAGE,READ_EXTERNAL_STORAGE
-android.api = 34
+android.api = 33
 android.minapi = 24
 android.ndk = 25b
 android.ndk_api = 24
+p4a.branch = master
 android.accept_sdk_license = True
 android.meta_data = android.hardware.vulkan.level:0
 android.features = android.hardware.touchscreen
