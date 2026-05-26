@@ -19,6 +19,7 @@ android.api = 33
 android.minapi = 24
 android.ndk = 25b
 android.ndk_api = 24
+p4a.extra_index_url = https://kivy.org/downloads/simple/
 
 android.accept_sdk_license = True
 android.meta_data = android.hardware.vulkan.level:0
