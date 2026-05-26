@@ -17,17 +17,23 @@ jobs:
             autoconf libtool pkg-config zlib1g-dev libncurses5-dev \
             libncursesw5-dev cmake libffi-dev libssl-dev openjdk-17-jdk
 
-      - name: Install buildozer and patch hostpython version
+      - name: Install buildozer
+        run: pip3 install buildozer cython
+
+      - name: Download p4a and patch hostpython version
         run: |
-          pip3 install buildozer cython python-for-android
-          P4A_PATH=$(python3 -c "import pythonforandroid; import os; print(os.path.dirname(pythonforandroid.__file__))")
-          echo "p4a path: $P4A_PATH"
-          RECIPE="$P4A_PATH/recipes/hostpython3/__init__.py"
-          echo "Before patch:"
-          grep version $RECIPE
-          sed -i "s/version = .*/version = '3.11.9'/" $RECIPE
-          echo "After patch:"
-          grep version $RECIPE
+          buildozer android debug 2>&1 | head -5 || true
+          P4A_DIR="$HOME/.buildozer/android/platform/python-for-android"
+          if [ -d "$P4A_DIR" ]; then
+            RECIPE="$P4A_DIR/pythonforandroid/recipes/hostpython3/__init__.py"
+            echo "Patching: $RECIPE"
+            sed -i "s/version = '[0-9.]*'/version = '3.11.9'/" $RECIPE
+            echo "After patch:"
+            grep version $RECIPE
+          else
+            echo "p4a not found at $P4A_DIR, trying workspace"
+            find $HOME -name "hostpython3" -type d 2>/dev/null
+          fi
 
       - name: Build APK
         run: buildozer android debug
