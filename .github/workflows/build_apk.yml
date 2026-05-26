@@ -10,24 +10,25 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-
       - name: Install system dependencies
         run: |
           sudo apt update
           sudo apt install -y git zip unzip python3-pip python3-dev \
             autoconf libtool pkg-config zlib1g-dev libncurses5-dev \
             libncursesw5-dev cmake libffi-dev libssl-dev \
-            openjdk-17-jdk
+            openjdk-17-jdk python3-is-python
+
+      - name: Check Python version
+        run: python3 --version
 
       - name: Install buildozer
-        run: pip install buildozer cython
+        run: |
+          pip3 install buildozer cython --break-system-packages
 
       - name: Build APK
-        run: buildozer android debug
+        run: |
+          export PYTHON=python3
+          buildozer android debug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
