@@ -19,7 +19,7 @@ jobs:
 
       - name: Install buildozer and patch hostpython version
         run: |
-          pip3 install buildozer cython
+          pip3 install buildozer cython python-for-android
           P4A_PATH=$(python3 -c "import pythonforandroid; import os; print(os.path.dirname(pythonforandroid.__file__))")
           echo "p4a path: $P4A_PATH"
           RECIPE="$P4A_PATH/recipes/hostpython3/__init__.py"
