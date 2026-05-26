@@ -1,61 +1,33 @@
 name: Build Android APK
-
 on:
+  push:
+    branches: [ main ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install system packages
+      - name: Install system dependencies
         run: |
           sudo apt update
-          sudo apt install -y \
-            zip \
-            unzip \
-            openjdk-17-jdk \
-            autoconf \
-            libtool \
-            pkg-config \
-            zlib1g-dev \
-            libncurses5-dev \
-            libncursesw5-dev \
-            libtinfo5 \
-            cmake \
-            libffi-dev \
-            libssl-dev
+          sudo apt install -y git zip unzip python3-pip python3-dev \
+            autoconf libtool pkg-config zlib1g-dev libncurses5-dev \
+            libncursesw5-dev cmake libffi-dev libssl-dev \
+            openjdk-17-jdk
 
-      - name: Install Python dependencies
+      - name: Install buildozer
         run: |
-          python -m pip install --upgrade pip
-
-          pip install \
-            cython==0.29.33 \
-            buildozer==1.5.0
-
-          pip install \
-            python-for-android==2024.01.21
-
-      - name: Clean build cache
-        run: |
-          rm -rf .buildozer
-          rm -rf bin
+          pip3 install buildozer==1.5.0 python-for-android==2023.9.16 cython
 
       - name: Build APK
-        run: |
-          buildozer android debug
+        run: buildozer android debug
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: android-apk
+          name: novel-reader-apk
           path: bin/*.apk
+          if-no-files-found: error
