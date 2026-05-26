@@ -1,108 +1,300 @@
-"""
-MVP app entry integrating Bookshelf, Search, and Reader with ScreenManager.
-"""
-
 from __future__ import annotations
 
+import logging
 import sys
 import traceback
+import types
 from pathlib import Path
+from typing import Any
+
+import flet as ft
 
 
-def crash_handler(exc_type, exc_value, exc_tb):
-    try:
-        # 安卓 sdcard
-        log_path = Path("/sdcard/novel_reader_error.txt")
+ROOT = Path(__file__).resolve().parent
+ICONS = getattr(ft, "Icons", None) or getattr(ft, "icons")
+COLORS = getattr(ft, "Colors", None) or getattr(ft, "colors")
 
-        with open(log_path, "w", encoding="utf-8") as f:
-            traceback.print_exception(
-                exc_type,
-                exc_value,
-                exc_tb,
-                file=f
-            )
 
-    except Exception:
+def crash_handler(exc_type, exc_value, exc_tb) -> None:
+    for path in (Path("/sdcard/novel_reader_error.txt"), Path("novel_reader_error.txt")):
         try:
-            # fallback 当前目录
-            log_path = Path("novel_reader_error.txt")
-
-            with open(log_path, "w", encoding="utf-8") as f:
-                traceback.print_exception(
-                    exc_type,
-                    exc_value,
-                    exc_tb,
-                    file=f
-                )
-
+            with path.open("w", encoding="utf-8") as f:
+                traceback.print_exception(exc_type, exc_value, exc_tb, file=f)
+            return
         except Exception:
             pass
 
 
 sys.excepthook = crash_handler
 
+if "novel_reader" not in sys.modules:
+    pkg = types.ModuleType("novel_reader")
+    pkg.__path__ = [str(ROOT)]
+    sys.modules["novel_reader"] = pkg
 
-
-import logging
-import os
-from pathlib import Path
-
-os.environ.setdefault("KIVY_HOME", str(Path(__file__).resolve().parent / ".kivy"))
-
-from kivy.app import App
-from kivy.uix.screenmanager import ScreenManager, NoTransition
-
-from novel_reader.core import app_state
-from novel_reader.ui.adapters import ui_dispatcher
-from novel_reader.ui.screens.bookshelf_screen import BookshelfScreen
-from novel_reader.ui.screens.search_screen import SearchScreen
-from novel_reader.ui.screens.reader_screen import ReaderScreen
 from novel_reader.services.book_service import BookService
+from novel_reader.services.chapter_service import ChapterService
+from novel_reader.services.crawler_service import CrawlerService
+
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 
-class NovelReaderApp(App):
-    def build(self):
-        self.title = "Novel Reader"
-        self.manager = ScreenManager(transition=NoTransition())
-        self.manager.add_widget(BookshelfScreen(name="bookshelf"))
-        self.manager.add_widget(SearchScreen(name="search"))
-        self.manager.add_widget(ReaderScreen(name="reader"))
-        self.manager.bind(current=self._on_screen_changed)
-        ui_dispatcher.run_in_background(self._restore_last_reading, on_done=self._on_restore_ready)
-        return self.manager
+def _title(item: dict[str, Any]) -> str:
+    return str(item.get("title") or item.get("name") or "Untitled")
 
-    def _on_screen_changed(self, *_args):
-        logger.info("Screen switch -> %s", self.manager.current)
 
-    def _restore_last_reading(self):
-        books_resp = BookService.list_books()
-        if not books_resp.get("ok"):
-            return {"target": "bookshelf", "book": None}
-        books = books_resp.get("data") or []
-        if not books:
-            return {"target": "bookshelf", "book": None}
-        candidate = None
-        for book in books:
-            if book.get("last_read_chapter") or int(book.get("last_read_index", 0) or 0) > 0:
-                candidate = book
-                break
-        if candidate is None:
-            candidate = books[0]
-        target = "reader" if candidate.get("last_read_chapter") or int(candidate.get("last_read_index", 0) or 0) > 0 else "bookshelf"
-        return {"target": target, "book": candidate}
+def _author(item: dict[str, Any]) -> str:
+    return str(item.get("author") or "Unknown author")
 
-    def _on_restore_ready(self, result):
-        if isinstance(result, Exception) or not isinstance(result, dict):
-            self.manager.current = "bookshelf"
+
+def _url(item: dict[str, Any]) -> str:
+    return str(item.get("source_url") or item.get("book_url") or item.get("url") or "")
+
+
+class FletNovelReader:
+    def __init__(self, page: ft.Page):
+        self.page = page
+        self.books: list[dict[str, Any]] = []
+        self.search_results: list[dict[str, Any]] = []
+        self.current_book: dict[str, Any] | None = None
+        self.current_chapters: list[dict[str, Any]] = []
+        self.current_chapter_index = 1
+
+        self.status = ft.Text("", color=COLORS.RED_700)
+        self.bookshelf_list = ft.ListView(expand=True, spacing=6)
+        self.search_input = ft.TextField(label="Search novels", expand=True, on_submit=lambda _: self.search())
+        self.search_list = ft.ListView(expand=True, spacing=6)
+        self.reader_title = ft.Text("Select a book", size=20, weight=ft.FontWeight.BOLD)
+        self.reader_body = ft.Text("Chapter content will be shown here.", selectable=True)
+        self.reader_scroll = ft.ListView(expand=True, controls=[self.reader_title, self.reader_body])
+
+        self.bookshelf_view = ft.Column(
+            expand=True,
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Text("Bookshelf", size=22, weight=ft.FontWeight.BOLD, expand=True),
+                        ft.IconButton(icon=ICONS.REFRESH, tooltip="Refresh", on_click=lambda _: self.load_books()),
+                    ]
+                ),
+                self.bookshelf_list,
+            ],
+        )
+        self.search_view = ft.Column(
+            expand=True,
+            controls=[
+                ft.Row(
+                    controls=[
+                        self.search_input,
+                        ft.IconButton(icon=ICONS.SEARCH, tooltip="Search", on_click=lambda _: self.search()),
+                    ]
+                ),
+                self.search_list,
+            ],
+        )
+        self.reader_view = ft.Column(
+            expand=True,
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.IconButton(icon=ICONS.ARROW_BACK, tooltip="Previous chapter", on_click=lambda _: self.prev_chapter()),
+                        ft.IconButton(icon=ICONS.ARROW_FORWARD, tooltip="Next chapter", on_click=lambda _: self.next_chapter()),
+                    ]
+                ),
+                self.reader_scroll,
+            ],
+        )
+        self.content = ft.Container(expand=True, padding=12, content=self.bookshelf_view)
+        self.nav = ft.NavigationBar(
+            selected_index=0,
+            on_change=self.on_nav_change,
+            destinations=[
+                ft.NavigationBarDestination(icon=ICONS.MENU_BOOK, label="Books"),
+                ft.NavigationBarDestination(icon=ICONS.SEARCH, label="Search"),
+                ft.NavigationBarDestination(icon=ICONS.AUTO_STORIES, label="Reader"),
+            ],
+        )
+
+    def build(self) -> None:
+        self.page.title = "Novel Reader"
+        self.page.theme_mode = ft.ThemeMode.LIGHT
+        self.page.padding = 0
+        self.page.add(ft.Column(expand=True, controls=[self.content, self.status, self.nav]))
+        self.load_books()
+
+    def set_status(self, message: str = "", is_error: bool = False) -> None:
+        self.status.value = message
+        self.status.color = COLORS.RED_700 if is_error else COLORS.BLUE_GREY_600
+        self.page.update()
+
+    def show_view(self, index: int) -> None:
+        self.nav.selected_index = index
+        self.content.content = [self.bookshelf_view, self.search_view, self.reader_view][index]
+        self.page.update()
+
+    def on_nav_change(self, event: ft.ControlEvent) -> None:
+        self.show_view(int(event.control.selected_index))
+
+    def load_books(self) -> None:
+        resp = BookService.list_books()
+        if not resp.get("ok"):
+            self.set_status(f"Failed to load bookshelf: {resp.get('error')}", True)
             return
-        book = result.get("book")
-        if book:
-            app_state.update_current_book(dict(book))
-        self.manager.current = result.get("target", "bookshelf")
+        self.books = list(resp.get("data") or [])
+        self.render_bookshelf()
+        self.set_status("")
+
+    def render_bookshelf(self) -> None:
+        self.bookshelf_list.controls.clear()
+        if not self.books:
+            self.bookshelf_list.controls.append(ft.Text("Bookshelf is empty. Search and add a novel first."))
+        for book in self.books:
+            subtitle = _author(book)
+            if book.get("last_read_chapter"):
+                subtitle += f" - Last read: {book.get('last_read_chapter')}"
+            self.bookshelf_list.controls.append(
+                ft.ListTile(
+                    title=ft.Text(_title(book)),
+                    subtitle=ft.Text(subtitle),
+                    on_click=lambda _, b=book: self.open_book(b),
+                )
+            )
+        self.page.update()
+
+    def search(self) -> None:
+        keyword = self.search_input.value.strip()
+        if not keyword:
+            self.set_status("Enter a search keyword.", True)
+            return
+        self.set_status("Searching...")
+        resp = CrawlerService.search(keyword)
+        if not resp.get("ok"):
+            self.set_status(f"Search failed: {resp.get('error')}", True)
+            return
+        self.search_results = list(resp.get("data") or [])
+        self.render_search_results()
+        self.set_status(f"Search complete. {len(self.search_results)} result(s).")
+
+    def render_search_results(self) -> None:
+        self.search_list.controls.clear()
+        if not self.search_results:
+            self.search_list.controls.append(ft.Text("No results."))
+        for item in self.search_results:
+            self.search_list.controls.append(
+                ft.ListTile(
+                    title=ft.Text(_title(item)),
+                    subtitle=ft.Text(f"{_author(item)} - {_url(item)}"),
+                    trailing=ft.Icon(ICONS.ADD),
+                    on_click=lambda _, result=item: self.add_and_open(result),
+                )
+            )
+        self.page.update()
+
+    def add_and_open(self, result: dict[str, Any]) -> None:
+        book_url = _url(result)
+        if not book_url:
+            self.set_status("The search result has no book URL.", True)
+            return
+        book_info = {
+            "title": _title(result),
+            "author": _author(result),
+            "source_url": book_url,
+            "cover_url": result.get("cover_url") or result.get("cover") or "",
+        }
+        resp = BookService.add_book(book_info)
+        if not resp.get("ok"):
+            self.set_status(f"Failed to add book: {resp.get('error')}", True)
+            return
+        book_id = (resp.get("data") or {}).get("book_id")
+        self.load_books()
+        book = next((b for b in self.books if b.get("id") == book_id), book_info | {"id": book_id})
+        self.open_book(book)
+
+    def open_book(self, book: dict[str, Any]) -> None:
+        self.current_book = dict(book)
+        self.current_chapter_index = max(1, int(book.get("last_read_index") or 1))
+        self.show_view(2)
+        self.load_reader()
+
+    def load_reader(self) -> None:
+        if not self.current_book:
+            return
+        book_id = int(self.current_book.get("id") or 0)
+        if not book_id:
+            self.set_status("Invalid book ID.", True)
+            return
+        self.current_chapters = self._get_chapters(book_id)
+        chapter = self._get_or_fetch_chapter(book_id, self.current_chapter_index)
+        if not chapter and self.current_chapters:
+            first = self.current_chapters[0]
+            self.current_chapter_index = int(first.get("chapter_index") or first.get("index") or 1)
+            chapter = self._get_or_fetch_chapter(book_id, self.current_chapter_index)
+        if not chapter:
+            self.reader_title.value = _title(self.current_book)
+            self.reader_body.value = "No readable chapter is available."
+            self.page.update()
+            return
+        meta_index = chapter.get("chapter_index") or chapter.get("index")
+        if meta_index is not None:
+            self.current_chapter_index = int(meta_index)
+        self.reader_title.value = str(chapter.get("title") or f"Chapter {self.current_chapter_index}")
+        self.reader_body.value = str(chapter.get("content") or "")
+        BookService.update_read_progress(book_id, self.current_chapter_index, self.reader_title.value)
+        self.set_status("")
+
+    def _get_chapters(self, book_id: int) -> list[dict[str, Any]]:
+        resp = ChapterService.list_chapters(book_id)
+        chapters = list(resp.get("data") or []) if resp.get("ok") else []
+        if chapters or not self.current_book:
+            return chapters
+        book_url = _url(self.current_book)
+        if not book_url:
+            return []
+        chapter_resp = CrawlerService.fetch_chapter_list(book_url)
+        return list(chapter_resp.get("data") or []) if chapter_resp.get("ok") else []
+
+    def _get_or_fetch_chapter(self, book_id: int, index: int) -> dict[str, Any] | None:
+        local = ChapterService.get_chapter(book_id, index)
+        if local.get("ok") and local.get("data"):
+            return dict(local["data"])
+        chapter_meta = self._chapter_meta(index)
+        chapter_url = str(chapter_meta.get("url") or "")
+        if not chapter_url:
+            return None
+        fetched = CrawlerService.fetch_chapter(chapter_url)
+        saved = ChapterService.store_fetched_chapter(book_id, index, chapter_url, fetched)
+        if saved.get("ok"):
+            local = ChapterService.get_chapter(book_id, index)
+            if local.get("ok") and local.get("data"):
+                return dict(local["data"])
+        return fetched.get("data") if fetched.get("ok") else None
+
+    def _chapter_meta(self, index: int) -> dict[str, Any]:
+        for chapter in self.current_chapters:
+            chapter_index = chapter.get("chapter_index", chapter.get("index", 0))
+            if int(chapter_index or 0) == index:
+                return dict(chapter)
+        if self.current_chapters and 0 <= index < len(self.current_chapters):
+            return dict(self.current_chapters[index])
+        return {}
+
+    def prev_chapter(self) -> None:
+        if self.current_chapter_index <= 1:
+            self.set_status("Already at the first chapter.")
+            return
+        self.current_chapter_index -= 1
+        self.load_reader()
+
+    def next_chapter(self) -> None:
+        self.current_chapter_index += 1
+        self.load_reader()
+
+
+def main(page: ft.Page) -> None:
+    FletNovelReader(page).build()
 
 
 if __name__ == "__main__":
-    NovelReaderApp().run()
+    ft.app(target=main)
