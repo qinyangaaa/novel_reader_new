@@ -10,16 +10,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build APK with Docker
-        run: |
-          docker run --rm \
-            -v ${{ github.workspace }}:/home/user/hostcwd \
-            kivy/buildozer:stable \
-            android debug
+      - name: Build with ArtemSBulgakov action
+        uses: ArtemSBulgakov/buildozer-action@v1
+        id: buildozer
+        with:
+          command: android debug
+          buildozer_version: stable
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: novel-reader-apk
-          path: bin/*.apk
+          path: ${{ steps.buildozer.outputs.filename }}
           if-no-files-found: error
