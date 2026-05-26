@@ -22,7 +22,8 @@ jobs:
 
       - name: Build APK
         run: buildozer android debug
-
+        env:
+          P4A_WHEEL_URL: https://kivy.org/downloads/simple/
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
