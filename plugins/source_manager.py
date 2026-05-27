@@ -2,7 +2,7 @@
 网站源管理器：搜索、可用性检测与批量更新
 
 功能：
-- discover_sources(keyword): 在 Bing 上搜索并提取搜索结果中的网站域名
+- discover_sources(keyword): 在 Yandex 上搜索并提取搜索结果中的网站域名
 - health_check(url): 测试网址是否可访问并能被 trafilatura 提取正文
 - update_sources(db_path=None): 批量检测数据库中所有网址，更新 is_active、success_rate、last_checked
 
@@ -23,7 +23,7 @@ import sqlite3
 import time
 from pathlib import Path
 from typing import List, Optional, Tuple
-from urllib.parse import urlparse, urljoin, quote_plus
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse, urljoin
 
 import requests
 import trafilatura
@@ -54,6 +54,22 @@ DEFAULT_SOURCES = [
     "www.69shuba.com",
     "www.biquge5200.cc",
 ]
+
+
+def _clean_search_url(href: str) -> str:
+    """解包搜索引擎跳转链接，尽量还原真实目标 URL。"""
+    if not href:
+        return ""
+    if href.startswith("//"):
+        href = f"https:{href}"
+    parsed = urlparse(href)
+    if "yandex." in parsed.netloc and parsed.query:
+        params = parse_qs(parsed.query)
+        for key in ("url", "u", "target"):
+            value = params.get(key)
+            if value:
+                return unquote(value[0])
+    return href
 
 
 def _is_novel_site(domain: str) -> bool:
@@ -127,25 +143,18 @@ def _normalize_url(url: str) -> str:
 
 
 def discover_sources(keyword: str, max_results: int = 30) -> List[str]:
-    """在 Bing 上搜索并提取搜索结果中的网站域名。
+    """在 Yandex 上搜索并提取搜索结果中的网站域名。
 
     返回值：域名字符串列表，例如 "www.biquge.com"。
-    注意：该函数直接抓取 Bing 搜索结果页面并解析链接，可能受搜索页面结构变化影响。
+    注意：该函数直接抓取 Yandex 搜索结果页面并解析链接，可能受搜索页面结构变化影响。
     """
     # 搜索关键词：使用更宽松的中文关键词以避免过度限制
     query = f"{keyword} 小说 免费阅读"
-    # 强制 Bing 返回简体中文 / 中国地区结果
-    bing_url = (
-        f"https://www.bing.com/search?q={quote_plus(query)}&cc=CN&setlang=zh-hans&mkt=zh-CN"
-    )
+    yandex_url = f"https://yandex.com/search/?text={quote_plus(query)}&lr=10590"
 
-    # 调试输出：查看 Bing 返回内容以便诊断
-    html = _request_with_retries(bing_url)
+    html = _request_with_retries(yandex_url)
     if not html:
-        print("请求失败，html为空")
         return DEFAULT_SOURCES
-    print(f"HTML长度: {len(html)}")
-    print(f"HTML前500字符: {html[:500]}")
 
     # 从搜索结果 HTML 中提取所有 href 链接，然后解析域名
     hrefs = re.findall(r'href\s*=\s*"(https?://[^"]+)"', html)
@@ -155,10 +164,11 @@ def discover_sources(keyword: str, max_results: int = 30) -> List[str]:
     allowed_suffixes = (".com", ".net", ".org", ".cc", ".xyz")
     for href in hrefs:
         try:
+            href = _clean_search_url(href)
             parsed = urlparse(href)
             domain = parsed.netloc.lower()
             # 过滤一些常见的非目标域
-            if not domain or any(x in domain for x in ("bing.com", "microsoft", "windows")):
+            if not domain or any(x in domain for x in ("yandex.", "microsoft", "windows")):
                 continue
             # 过滤黑名单（包含任意黑名单片段即跳过）
             if any(b in domain for b in BLACKLIST):

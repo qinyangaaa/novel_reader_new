@@ -42,11 +42,11 @@ logger = logging.getLogger(__name__)
 
 
 def _title(item: dict[str, Any]) -> str:
-    return str(item.get("title") or item.get("name") or "Untitled")
+    return str(item.get("title") or item.get("name") or "未命名")
 
 
 def _author(item: dict[str, Any]) -> str:
-    return str(item.get("author") or "Unknown author")
+    return str(item.get("author") or item.get("source") or "未知来源")
 
 
 def _url(item: dict[str, Any]) -> str:
@@ -64,10 +64,10 @@ class FletNovelReader:
 
         self.status = ft.Text("", color=COLORS.RED_700)
         self.bookshelf_list = ft.ListView(expand=True, spacing=6)
-        self.search_input = ft.TextField(label="Search novels", expand=True, on_submit=lambda _: self.search())
+        self.search_input = ft.TextField(label="搜索小说", expand=True, on_submit=lambda _: self.search())
         self.search_list = ft.ListView(expand=True, spacing=6)
-        self.reader_title = ft.Text("Select a book", size=20, weight=ft.FontWeight.BOLD)
-        self.reader_body = ft.Text("Chapter content will be shown here.", selectable=True)
+        self.reader_title = ft.Text("请选择一本书", size=20, weight=ft.FontWeight.BOLD)
+        self.reader_body = ft.Text("章节内容会显示在这里。", selectable=True)
         self.reader_scroll = ft.ListView(expand=True, controls=[self.reader_title, self.reader_body])
 
         self.bookshelf_view = ft.Column(
@@ -75,8 +75,8 @@ class FletNovelReader:
             controls=[
                 ft.Row(
                     controls=[
-                        ft.Text("Bookshelf", size=22, weight=ft.FontWeight.BOLD, expand=True),
-                        ft.IconButton(icon=ICONS.REFRESH, tooltip="Refresh", on_click=lambda _: self.load_books()),
+                        ft.Text("书架", size=22, weight=ft.FontWeight.BOLD, expand=True),
+                        ft.IconButton(icon=ICONS.REFRESH, tooltip="刷新", on_click=lambda _: self.load_books()),
                     ]
                 ),
                 self.bookshelf_list,
@@ -88,7 +88,7 @@ class FletNovelReader:
                 ft.Row(
                     controls=[
                         self.search_input,
-                        ft.IconButton(icon=ICONS.SEARCH, tooltip="Search", on_click=lambda _: self.search()),
+                        ft.IconButton(icon=ICONS.SEARCH, tooltip="搜索", on_click=lambda _: self.search()),
                     ]
                 ),
                 self.search_list,
@@ -99,8 +99,8 @@ class FletNovelReader:
             controls=[
                 ft.Row(
                     controls=[
-                        ft.IconButton(icon=ICONS.ARROW_BACK, tooltip="Previous chapter", on_click=lambda _: self.prev_chapter()),
-                        ft.IconButton(icon=ICONS.ARROW_FORWARD, tooltip="Next chapter", on_click=lambda _: self.next_chapter()),
+                        ft.IconButton(icon=ICONS.ARROW_BACK, tooltip="上一章", on_click=lambda _: self.prev_chapter()),
+                        ft.IconButton(icon=ICONS.ARROW_FORWARD, tooltip="下一章", on_click=lambda _: self.next_chapter()),
                     ]
                 ),
                 self.reader_scroll,
@@ -111,9 +111,9 @@ class FletNovelReader:
             selected_index=0,
             on_change=self.on_nav_change,
             destinations=[
-                ft.NavigationBarDestination(icon=ICONS.MENU_BOOK, label="Books"),
-                ft.NavigationBarDestination(icon=ICONS.SEARCH, label="Search"),
-                ft.NavigationBarDestination(icon=ICONS.AUTO_STORIES, label="Reader"),
+                ft.NavigationBarDestination(icon=ICONS.MENU_BOOK, label="书架"),
+                ft.NavigationBarDestination(icon=ICONS.SEARCH, label="搜索"),
+                ft.NavigationBarDestination(icon=ICONS.AUTO_STORIES, label="阅读"),
             ],
         )
 
@@ -140,7 +140,7 @@ class FletNovelReader:
     def load_books(self) -> None:
         resp = BookService.list_books()
         if not resp.get("ok"):
-            self.set_status(f"Failed to load bookshelf: {resp.get('error')}", True)
+            self.set_status(f"加载书架失败：{resp.get('error')}", True)
             return
         self.books = list(resp.get("data") or [])
         self.render_bookshelf()
@@ -149,11 +149,11 @@ class FletNovelReader:
     def render_bookshelf(self) -> None:
         self.bookshelf_list.controls.clear()
         if not self.books:
-            self.bookshelf_list.controls.append(ft.Text("Bookshelf is empty. Search and add a novel first."))
+            self.bookshelf_list.controls.append(ft.Text("书架为空，请先搜索并添加小说。"))
         for book in self.books:
             subtitle = _author(book)
             if book.get("last_read_chapter"):
-                subtitle += f" - Last read: {book.get('last_read_chapter')}"
+                subtitle += f" · 上次读到：{book.get('last_read_chapter')}"
             self.bookshelf_list.controls.append(
                 ft.ListTile(
                     title=ft.Text(_title(book)),
@@ -166,26 +166,26 @@ class FletNovelReader:
     def search(self) -> None:
         keyword = self.search_input.value.strip()
         if not keyword:
-            self.set_status("Enter a search keyword.", True)
+            self.set_status("请输入搜索关键词。", True)
             return
-        self.set_status("Searching...")
+        self.set_status("正在通过 Yandex 搜索...")
         resp = CrawlerService.search(keyword)
         if not resp.get("ok"):
-            self.set_status(f"Search failed: {resp.get('error')}", True)
+            self.set_status(f"搜索失败：{resp.get('error')}", True)
             return
         self.search_results = list(resp.get("data") or [])
         self.render_search_results()
-        self.set_status(f"Search complete. {len(self.search_results)} result(s).")
+        self.set_status(f"搜索完成，共 {len(self.search_results)} 条结果。")
 
     def render_search_results(self) -> None:
         self.search_list.controls.clear()
         if not self.search_results:
-            self.search_list.controls.append(ft.Text("No results."))
+            self.search_list.controls.append(ft.Text("没有搜索结果。"))
         for item in self.search_results:
             self.search_list.controls.append(
                 ft.ListTile(
                     title=ft.Text(_title(item)),
-                    subtitle=ft.Text(f"{_author(item)} - {_url(item)}"),
+                    subtitle=ft.Text(f"来源：{_author(item)} · {_url(item)}"),
                     trailing=ft.Icon(ICONS.ADD),
                     on_click=lambda _, result=item: self.add_and_open(result),
                 )
@@ -195,7 +195,7 @@ class FletNovelReader:
     def add_and_open(self, result: dict[str, Any]) -> None:
         book_url = _url(result)
         if not book_url:
-            self.set_status("The search result has no book URL.", True)
+            self.set_status("搜索结果缺少书籍地址，无法添加。", True)
             return
         book_info = {
             "title": _title(result),
@@ -205,7 +205,7 @@ class FletNovelReader:
         }
         resp = BookService.add_book(book_info)
         if not resp.get("ok"):
-            self.set_status(f"Failed to add book: {resp.get('error')}", True)
+            self.set_status(f"添加书籍失败：{resp.get('error')}", True)
             return
         book_id = (resp.get("data") or {}).get("book_id")
         self.load_books()
@@ -223,7 +223,7 @@ class FletNovelReader:
             return
         book_id = int(self.current_book.get("id") or 0)
         if not book_id:
-            self.set_status("Invalid book ID.", True)
+            self.set_status("书籍 ID 无效。", True)
             return
         self.current_chapters = self._get_chapters(book_id)
         chapter = self._get_or_fetch_chapter(book_id, self.current_chapter_index)
@@ -233,13 +233,13 @@ class FletNovelReader:
             chapter = self._get_or_fetch_chapter(book_id, self.current_chapter_index)
         if not chapter:
             self.reader_title.value = _title(self.current_book)
-            self.reader_body.value = "No readable chapter is available."
+            self.reader_body.value = "暂无可阅读章节。"
             self.page.update()
             return
         meta_index = chapter.get("chapter_index") or chapter.get("index")
         if meta_index is not None:
             self.current_chapter_index = int(meta_index)
-        self.reader_title.value = str(chapter.get("title") or f"Chapter {self.current_chapter_index}")
+        self.reader_title.value = str(chapter.get("title") or f"第 {self.current_chapter_index} 章")
         self.reader_body.value = str(chapter.get("content") or "")
         BookService.update_read_progress(book_id, self.current_chapter_index, self.reader_title.value)
         self.set_status("")
@@ -282,7 +282,7 @@ class FletNovelReader:
 
     def prev_chapter(self) -> None:
         if self.current_chapter_index <= 1:
-            self.set_status("Already at the first chapter.")
+            self.set_status("已经是第一章。")
             return
         self.current_chapter_index -= 1
         self.load_reader()

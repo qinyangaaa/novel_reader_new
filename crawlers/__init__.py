@@ -3,4 +3,6 @@ from .registry import register, unregister, get_available_crawlers, get_crawler_
 from .base_crawler import BaseCrawler
 from .universal_crawler import universal as universal_crawler
 
+register(universal_crawler, priority=universal_crawler.priority)
+
 __all__ = ["register", "unregister", "get_available_crawlers", "get_crawler_by_url", "get_session", "BaseCrawler", "universal_crawler"]

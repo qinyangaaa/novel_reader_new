@@ -9,7 +9,7 @@ import logging
 import re
 import time
 from typing import Dict, Any, List
-from urllib.parse import urljoin, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 import trafilatura
@@ -34,8 +34,83 @@ class UniversalCrawler(BaseCrawler):
         return {"ok": ok, "data": data, "error": error, "source": self.name}
 
     def search(self, keyword: str) -> Dict:
-        # 兜底：使用通用搜索（如 Google/Bing）未实现，返回空
-        return self._unify(True, [], None)
+        """用 Yandex 做通用小说搜索兜底。"""
+        if not keyword.strip():
+            return self._unify(True, [], None)
+        query = f"{keyword} 免费小说 全文阅读"
+        search_url = f"https://yandex.com/search/?text={quote_plus(query)}&lr=10590"
+        try:
+            resp = self.session.get(search_url, timeout=self.timeout)
+            resp.raise_for_status()
+            try:
+                resp.encoding = resp.apparent_encoding
+            except Exception:
+                pass
+            soup = BeautifulSoup(resp.text, "html.parser")
+            results = []
+            seen = set()
+            for link in soup.select("a[href]"):
+                href = self._clean_search_url(link.get("href") or "")
+                if not self._is_candidate_book_url(href) or href in seen:
+                    continue
+                title = link.get_text(" ", strip=True)
+                if not title:
+                    parent = link.find_parent()
+                    title = parent.get_text(" ", strip=True) if parent else ""
+                domain = urlparse(href).netloc.lower()
+                seen.add(href)
+                results.append(
+                    {
+                        "title": title[:80] or keyword,
+                        "author": domain,
+                        "source_url": href,
+                        "book_url": href,
+                        "source": domain,
+                    }
+                )
+                if len(results) >= 20:
+                    break
+            mark_success(self.name)
+            return self._unify(True, results, None)
+        except Exception as e:
+            logger.debug("UniversalCrawler.search failed: %s", e)
+            mark_failure(self.name)
+            return self._unify(False, None, str(e))
+
+    def _clean_search_url(self, href: str) -> str:
+        if not href:
+            return ""
+        if href.startswith("//"):
+            href = f"https:{href}"
+        if href.startswith("/"):
+            return ""
+        parsed = urlparse(href)
+        if "yandex." in parsed.netloc and parsed.query:
+            params = parse_qs(parsed.query)
+            for key in ("url", "u", "target"):
+                value = params.get(key)
+                if value:
+                    return unquote(value[0])
+        return href
+
+    def _is_candidate_book_url(self, href: str) -> bool:
+        parsed = urlparse(href)
+        domain = parsed.netloc.lower()
+        if parsed.scheme not in ("http", "https") or not domain:
+            return False
+        blocked = (
+            "yandex.",
+            "google.",
+            "bing.",
+            "baidu.",
+            "zhihu.",
+            "bilibili.",
+            "weibo.",
+            "wikipedia.",
+            "github.",
+            "microsoft.",
+        )
+        return not any(item in domain for item in blocked)
 
     def get_book_info(self, book_url: str) -> Dict:
         try:
