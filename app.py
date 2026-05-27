@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import threading
 import traceback
 import types
 from pathlib import Path
@@ -58,6 +59,7 @@ class FletNovelReader:
         self.page = page
         self.books: list[dict[str, Any]] = []
         self.search_results: list[dict[str, Any]] = []
+        self.searching = False
         self.current_book: dict[str, Any] | None = None
         self.current_chapters: list[dict[str, Any]] = []
         self.current_chapter_index = 1
@@ -168,14 +170,41 @@ class FletNovelReader:
         if not keyword:
             self.set_status("请输入搜索关键词。", True)
             return
-        self.set_status("正在通过 Yandex 搜索...")
-        resp = CrawlerService.search(keyword)
-        if not resp.get("ok"):
-            self.set_status(f"搜索失败：{resp.get('error')}", True)
+        if self.searching:
+            self.set_status("正在搜索，请稍候...")
             return
-        self.search_results = list(resp.get("data") or [])
+        self.searching = True
+        self.search_list.controls.clear()
+        self.search_list.controls.append(ft.ProgressRing())
+        self.page.update()
+        self.set_status("正在通过 Yandex 查找小说网站，并在站内搜索...")
+        runner = getattr(self.page, "run_thread", None)
+        if callable(runner):
+            runner(self._search_worker, keyword)
+        else:
+            threading.Thread(target=self._search_worker, args=(keyword,), daemon=True).start()
+
+    def _search_worker(self, keyword: str) -> None:
+        try:
+            resp = CrawlerService.search(keyword)
+            if not resp.get("ok"):
+                self.search_results = []
+                self._show_search_result_status(f"搜索失败：{resp.get('error')}", True)
+                return
+            self.search_results = list(resp.get("data") or [])
+            self._show_search_result_status(f"搜索完成，共 {len(self.search_results)} 条结果。")
+        except Exception as e:
+            logger.exception("search failed")
+            self.search_results = []
+            self._show_search_result_status(f"搜索异常：{e}", True)
+        finally:
+            self.searching = False
+
+    def _show_search_result_status(self, message: str, is_error: bool = False) -> None:
         self.render_search_results()
-        self.set_status(f"搜索完成，共 {len(self.search_results)} 条结果。")
+        self.status.value = message
+        self.status.color = COLORS.RED_700 if is_error else COLORS.BLUE_GREY_600
+        self.page.update()
 
     def render_search_results(self) -> None:
         self.search_list.controls.clear()

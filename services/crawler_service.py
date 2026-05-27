@@ -98,7 +98,7 @@ class CrawlerService:
         注意：搜索通常比抓取更依赖站点能力，建议由上层决定并发与节流策略。
         """
         try:
-            source_results = source_manager.search_books(keyword, max_sources=8, max_results=30)
+            source_results = source_manager.search_books(keyword, max_sources=5, max_results=20)
             if source_results:
                 return CrawlerService._unify(True, source_results, None, "source_manager")
 

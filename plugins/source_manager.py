@@ -129,7 +129,8 @@ def _request_with_retries(
         except Exception as e:
             logger.debug("请求失败：%s %s 重试 %s/%s: %s", method, url, attempt + 1, retries, e)
             attempt += 1
-            time.sleep(1 + attempt * 0.5)
+            if attempt < retries:
+                time.sleep(1 + attempt * 0.5)
     return None
 
 
@@ -194,7 +195,7 @@ def discover_sources(keyword: str, max_results: int = 30) -> List[str]:
     return domains
 
 
-def search_books(keyword: str, db_path: Optional[str] = None, max_sources: int = 8, max_results: int = 30) -> List[Dict]:
+def search_books(keyword: str, db_path: Optional[str] = None, max_sources: int = 5, max_results: int = 20) -> List[Dict]:
     """先发现/读取小说网站，再逐站搜索指定小说。
 
     搜索顺序：
@@ -281,13 +282,13 @@ def _normalize_domain(value: str) -> str:
     return parsed.netloc.lower().split(":")[0]
 
 
-def _search_one_source(keyword: str, domain: str, pattern: Optional[str], limit: int = 8) -> List[Dict]:
+def _search_one_source(keyword: str, domain: str, pattern: Optional[str], limit: int = 6) -> List[Dict]:
     base_url = f"https://{domain}"
     search_urls = _build_site_search_urls(keyword, domain, pattern)
     found: List[Dict] = []
     seen = set()
     for search_url in search_urls:
-        html = _request_with_retries(search_url, timeout=8, retries=3)
+        html = _request_with_retries(search_url, timeout=5, retries=1)
         if not html:
             continue
         for item in _extract_book_results(html, base_url=base_url, domain=domain, keyword=keyword):
