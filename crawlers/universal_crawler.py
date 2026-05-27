@@ -103,7 +103,6 @@ class UniversalCrawler(BaseCrawler):
             if not candidates:
                 candidates = [soup]
             links = []
-            seen = set()
             for container in candidates:
                 for item in container.find_all("a", href=True):
                     title = item.get_text(" ", strip=True)
@@ -114,14 +113,13 @@ class UniversalCrawler(BaseCrawler):
                         continue
                     if not urlparse(href).netloc:
                         href = urljoin(base_url, href)
-                    if href in seen:
-                        continue
-                    seen.add(href)
                     links.append({"title": title, "url": href, "index": len(links) + 1})
-            if links and any(word in links[0]["title"] for word in ("大结局", "完结", "最后")):
+            start_index = self._find_catalog_start_index(links)
+            if start_index > 0:
+                links = links[start_index:]
+            elif links and any(word in links[0]["title"] for word in ("大结局", "完结", "最后")):
                 links.reverse()
-                for index, chapter in enumerate(links, start=1):
-                    chapter["index"] = index
+            links = self._dedupe_chapters(links)
             mark_success(self.name)
             return self._unify(True, links, None)
         except Exception as e:
@@ -138,6 +136,26 @@ class UniversalCrawler(BaseCrawler):
         if any(word in title for word in ("序章", "楔子", "正文", "番外", "大结局")):
             return True
         return bool(re.match(r"^\d+[\.\s、_-]", title))
+
+    def _find_catalog_start_index(self, links: list[dict[str, Any]]) -> int:
+        for index, chapter in enumerate(links):
+            title = chapter.get("title", "")
+            if re.search(r"第[一1][章节回]", title) or any(word in title for word in ("序章", "楔子")):
+                return index
+        return 0
+
+    def _dedupe_chapters(self, links: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        result = []
+        seen = set()
+        for chapter in links:
+            url = chapter.get("url")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            chapter = dict(chapter)
+            chapter["index"] = len(result) + 1
+            result.append(chapter)
+        return result
 
     def fetch_chapter(self, chapter_url: str) -> Dict:
         try:
