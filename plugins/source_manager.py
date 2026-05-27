@@ -22,9 +22,10 @@ import re
 import sqlite3
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, quote_plus, unquote, urlparse, urljoin
 
+from bs4 import BeautifulSoup
 import requests
 import trafilatura
 
@@ -193,6 +194,196 @@ def discover_sources(keyword: str, max_results: int = 30) -> List[str]:
     return domains
 
 
+def search_books(keyword: str, db_path: Optional[str] = None, max_sources: int = 8, max_results: int = 30) -> List[Dict]:
+    """先发现/读取小说网站，再逐站搜索指定小说。
+
+    搜索顺序：
+    1. 数据库中启用的网站源；
+    2. Yandex 发现的新网站源；
+    3. DEFAULT_SOURCES 兜底；
+    4. 对每个站点先尝试常见站内搜索地址，再用 Yandex 的 site:domain 兜底。
+    """
+    keyword = keyword.strip()
+    if not keyword:
+        return []
+    sources = _get_candidate_sources(keyword, db_path=db_path, max_sources=max_sources)
+    if not sources:
+        return []
+
+    results: List[Dict] = []
+    seen_urls = set()
+
+    def _search_one(source: Tuple[str, Optional[str]]) -> List[Dict]:
+        domain, pattern = source
+        try:
+            return _search_one_source(keyword, domain, pattern=pattern, limit=8)
+        except Exception as e:
+            logger.debug("search source failed: %s %s", domain, e)
+            return []
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(sources))) as executor:
+        for source_results in executor.map(_search_one, sources):
+            for item in source_results:
+                url = item.get("source_url") or item.get("book_url")
+                if not url or url in seen_urls:
+                    continue
+                seen_urls.add(url)
+                results.append(item)
+                if len(results) >= max_results:
+                    return results
+    return results
+
+
+def _get_candidate_sources(keyword: str, db_path: Optional[str], max_sources: int) -> List[Tuple[str, Optional[str]]]:
+    rows = _load_active_sources(db_path)
+    sources: List[Tuple[str, Optional[str]]] = []
+    seen = set()
+    for domain, pattern in rows:
+        domain = _normalize_domain(domain)
+        if domain and domain not in seen and _is_novel_site(domain):
+            seen.add(domain)
+            sources.append((domain, pattern))
+    for domain in discover_sources(keyword, max_results=max_sources):
+        domain = _normalize_domain(domain)
+        if domain and domain not in seen and _is_novel_site(domain):
+            seen.add(domain)
+            sources.append((domain, None))
+    for domain in DEFAULT_SOURCES:
+        domain = _normalize_domain(domain)
+        if domain and domain not in seen:
+            seen.add(domain)
+            sources.append((domain, None))
+    return sources[:max_sources]
+
+
+def _load_active_sources(db_path: Optional[str]) -> List[Tuple[str, Optional[str]]]:
+    if db_path is None:
+        root = Path(__file__).resolve().parents[1]
+        db_path = str(root / "database" / "sources.db")
+    if not Path(db_path).exists():
+        return []
+    conn = sqlite3.connect(db_path)
+    try:
+        _ensure_db(conn)
+        rows = conn.execute(
+            "SELECT base_url, search_pattern FROM website_sources WHERE is_active = 1 ORDER BY success_rate DESC, id ASC"
+        ).fetchall()
+        return [(str(row[0]), row[1]) for row in rows]
+    except Exception as e:
+        logger.debug("load active sources failed: %s", e)
+        return []
+    finally:
+        conn.close()
+
+
+def _normalize_domain(value: str) -> str:
+    parsed = urlparse(_normalize_url(value))
+    return parsed.netloc.lower().split(":")[0]
+
+
+def _search_one_source(keyword: str, domain: str, pattern: Optional[str], limit: int = 8) -> List[Dict]:
+    base_url = f"https://{domain}"
+    search_urls = _build_site_search_urls(keyword, domain, pattern)
+    found: List[Dict] = []
+    seen = set()
+    for search_url in search_urls:
+        html = _request_with_retries(search_url, timeout=8, retries=3)
+        if not html:
+            continue
+        for item in _extract_book_results(html, base_url=base_url, domain=domain, keyword=keyword):
+            url = item.get("source_url")
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            found.append(item)
+            if len(found) >= limit:
+                return found
+    return found
+
+
+def _build_site_search_urls(keyword: str, domain: str, pattern: Optional[str]) -> List[str]:
+    encoded = quote_plus(keyword)
+    base_urls = [f"https://{domain}", f"http://{domain}"]
+    urls = []
+    if pattern:
+        try:
+            urls.append(pattern.format(keyword=encoded, raw_keyword=keyword, base_url=base_urls[0], domain=domain))
+        except Exception:
+            urls.append(pattern)
+    for base_url in base_urls:
+        urls.extend(
+            [
+                f"{base_url}/search/?q={encoded}",
+                f"{base_url}/search?keyword={encoded}",
+                f"{base_url}/search.html?keyword={encoded}",
+                f"{base_url}/modules/article/search.php?searchkey={encoded}",
+                f"{base_url}/s?q={encoded}",
+            ]
+        )
+    urls.append(f"https://yandex.com/search/?text={quote_plus(f'site:{domain} {keyword} 小说')}&lr=10590")
+    deduped = []
+    seen = set()
+    for url in urls:
+        if url and url not in seen:
+            seen.add(url)
+            deduped.append(url)
+    return deduped
+
+
+def _extract_book_results(html: str, base_url: str, domain: str, keyword: str) -> List[Dict]:
+    soup = BeautifulSoup(html, "html.parser")
+    results = []
+    seen = set()
+    for link in soup.select("a[href]"):
+        href = _clean_search_url(link.get("href") or "")
+        if not href:
+            continue
+        if href.startswith("/"):
+            href = urljoin(base_url, href)
+        parsed = urlparse(href)
+        target_domain = parsed.netloc.lower()
+        if parsed.scheme not in ("http", "https") or not target_domain:
+            continue
+        if domain not in target_domain:
+            continue
+        if href in seen or _looks_like_noise_url(href):
+            continue
+        title = link.get_text(" ", strip=True)
+        if not title:
+            parent = link.find_parent()
+            title = parent.get_text(" ", strip=True) if parent else ""
+        title = re.sub(r"\s+", " ", title).strip()
+        if not _looks_like_book_result(title, href, keyword):
+            continue
+        seen.add(href)
+        results.append(
+            {
+                "title": title[:80] or keyword,
+                "author": target_domain,
+                "source": target_domain,
+                "source_url": href,
+                "book_url": href,
+            }
+        )
+    return results
+
+
+def _looks_like_book_result(title: str, href: str, keyword: str) -> bool:
+    haystack = f"{title} {unquote(href)}".lower()
+    keyword_lower = keyword.lower()
+    if keyword_lower and keyword_lower in haystack:
+        return True
+    markers = ("book", "novel", "chapter", "read", "txt", "xiaoshuo", "bqg", "biqu", "shu")
+    chinese_markers = ("小说", "最新章节", "全文阅读", "章节目录", "无弹窗", "阅读")
+    return any(item in haystack for item in markers) or any(item in title for item in chinese_markers)
+
+
+def _looks_like_noise_url(href: str) -> bool:
+    lowered = href.lower()
+    noise = ("javascript:", "#", "/login", "/register", "/user", "/tag/", "/sort/", "/top/", "/rank/", "/history")
+    return any(item in lowered for item in noise)
+
+
 def health_check(url: str, probe_retries: int = 3, timeout: int = 10) -> bool:
     """测试网址是否可访问并能被 trafilatura 提取正文。
 
@@ -291,7 +482,7 @@ def update_sources(db_path: Optional[str] = None, concurrency: int = 6) -> dict:
         conn.close()
 
 
-__all__ = ["discover_sources", "health_check", "update_sources"]
+__all__ = ["discover_sources", "health_check", "search_books", "update_sources"]
 
 
 if __name__ == "__main__":

@@ -12,6 +12,7 @@ from typing import Any, Dict, List, Optional
 from . import BookService
 from ..crawlers import get_crawler_by_url, get_available_crawlers
 from ..crawlers.registry import mark_failure, mark_success
+from ..plugins import source_manager
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -97,6 +98,10 @@ class CrawlerService:
         注意：搜索通常比抓取更依赖站点能力，建议由上层决定并发与节流策略。
         """
         try:
+            source_results = source_manager.search_books(keyword, max_sources=8, max_results=30)
+            if source_results:
+                return CrawlerService._unify(True, source_results, None, "source_manager")
+
             candidates = get_available_crawlers()
             tries = 0
             for crawler in candidates:

@@ -1,21 +1,18 @@
-"""兜底通用爬虫实现，作为最后的 fallback（优先级最低）。
-
-设计：继承 BaseCrawler，使用 registry 提供的共享 session，尽量用 trafilatura + BeautifulSoup 提炼信息。
-不要在此处写针对站点的大量 if/else，具体站点解析应由 sites 中的爬虫实现。
-"""
 from __future__ import annotations
 
 import logging
 import re
 import time
-from typing import Dict, Any, List
-from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
+from typing import Any, Dict
+from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 import trafilatura
 
+from ..plugins import source_manager
 from .base_crawler import BaseCrawler
 from .registry import get_session, mark_failure, mark_success
+
 
 logger = logging.getLogger(__name__)
 logger.addHandler(logging.NullHandler())
@@ -23,7 +20,7 @@ logger.addHandler(logging.NullHandler())
 
 class UniversalCrawler(BaseCrawler):
     name = "universal"
-    priority = 1000  # 兜底优先级最低
+    priority = 1000
 
     def __init__(self, timeout: int = 10):
         super().__init__()
@@ -34,42 +31,11 @@ class UniversalCrawler(BaseCrawler):
         return {"ok": ok, "data": data, "error": error, "source": self.name}
 
     def search(self, keyword: str) -> Dict:
-        """用 Yandex 做通用小说搜索兜底。"""
+        """先发现小说站，再在这些站点中搜索小说。"""
         if not keyword.strip():
             return self._unify(True, [], None)
-        query = f"{keyword} 免费小说 全文阅读"
-        search_url = f"https://yandex.com/search/?text={quote_plus(query)}&lr=10590"
         try:
-            resp = self.session.get(search_url, timeout=self.timeout)
-            resp.raise_for_status()
-            try:
-                resp.encoding = resp.apparent_encoding
-            except Exception:
-                pass
-            soup = BeautifulSoup(resp.text, "html.parser")
-            results = []
-            seen = set()
-            for link in soup.select("a[href]"):
-                href = self._clean_search_url(link.get("href") or "")
-                if not self._is_candidate_book_url(href) or href in seen:
-                    continue
-                title = link.get_text(" ", strip=True)
-                if not title:
-                    parent = link.find_parent()
-                    title = parent.get_text(" ", strip=True) if parent else ""
-                domain = urlparse(href).netloc.lower()
-                seen.add(href)
-                results.append(
-                    {
-                        "title": title[:80] or keyword,
-                        "author": domain,
-                        "source_url": href,
-                        "book_url": href,
-                        "source": domain,
-                    }
-                )
-                if len(results) >= 20:
-                    break
+            results = source_manager.search_books(keyword, max_sources=8, max_results=30)
             mark_success(self.name)
             return self._unify(True, results, None)
         except Exception as e:
@@ -77,120 +43,89 @@ class UniversalCrawler(BaseCrawler):
             mark_failure(self.name)
             return self._unify(False, None, str(e))
 
-    def _clean_search_url(self, href: str) -> str:
-        if not href:
-            return ""
-        if href.startswith("//"):
-            href = f"https:{href}"
-        if href.startswith("/"):
-            return ""
-        parsed = urlparse(href)
-        if "yandex." in parsed.netloc and parsed.query:
-            params = parse_qs(parsed.query)
-            for key in ("url", "u", "target"):
-                value = params.get(key)
-                if value:
-                    return unquote(value[0])
-        return href
-
-    def _is_candidate_book_url(self, href: str) -> bool:
-        parsed = urlparse(href)
-        domain = parsed.netloc.lower()
-        if parsed.scheme not in ("http", "https") or not domain:
-            return False
-        blocked = (
-            "yandex.",
-            "google.",
-            "bing.",
-            "baidu.",
-            "zhihu.",
-            "bilibili.",
-            "weibo.",
-            "wikipedia.",
-            "github.",
-            "microsoft.",
-        )
-        return not any(item in domain for item in blocked)
-
     def get_book_info(self, book_url: str) -> Dict:
         try:
-            t0 = time.time()
             resp = self.session.get(book_url, timeout=self.timeout)
-            html = resp.text
-            soup = BeautifulSoup(html, "html.parser")
+            resp.raise_for_status()
+            try:
+                resp.encoding = resp.apparent_encoding
+            except Exception:
+                pass
+            soup = BeautifulSoup(resp.text, "html.parser")
             title = (soup.title.string or "").strip() if soup.title else ""
-            # 尝试提取作者/封面/简介的常见选择器
             author = ""
             cover = ""
             desc = ""
-            # 简单启发式查找
-            auth_node = soup.select_one("meta[name=author]") or soup.select_one(".author")
-            if auth_node and auth_node.get("content"):
-                author = auth_node.get("content")
-            img = soup.select_one("meta[property='og:image']") or soup.select_one("img")
-            if img and img.get("content"):
-                cover = img.get("content")
-            # 简要描述
-            dnode = soup.select_one("meta[name=description]")
-            if dnode and dnode.get("content"):
-                desc = dnode.get("content")
+            author_node = soup.select_one("meta[name=author]") or soup.select_one(".author")
+            if author_node:
+                author = author_node.get("content") or author_node.get_text(" ", strip=True)
+            image_node = soup.select_one("meta[property='og:image']") or soup.select_one("img")
+            if image_node:
+                cover = image_node.get("content") or image_node.get("src") or ""
+            desc_node = soup.select_one("meta[name=description]")
+            if desc_node:
+                desc = desc_node.get("content") or ""
             mark_success(self.name)
             return self._unify(True, {"title": title, "author": author, "cover": cover, "description": desc}, None)
         except Exception as e:
-            logger.debug("UniversalCrawler.get_book_info 失败: %s", e)
+            logger.debug("UniversalCrawler.get_book_info failed: %s", e)
             mark_failure(self.name)
             return self._unify(False, None, str(e))
 
     def get_chapter_list(self, book_url: str) -> Dict:
         try:
             resp = self.session.get(book_url, timeout=self.timeout)
-            html = resp.text
-            soup = BeautifulSoup(html, "html.parser")
+            resp.raise_for_status()
+            try:
+                resp.encoding = resp.apparent_encoding
+            except Exception:
+                pass
+            soup = BeautifulSoup(resp.text, "html.parser")
             candidates = []
-            for id_name in ("list", "chapterlist", "chapter", "booklist", "mulu"):
-                candidates.extend(soup.find_all(id=re.compile(id_name, re.I)))
-                candidates.extend(soup.find_all(class_=re.compile(id_name, re.I)))
+            for name in ("list", "chapterlist", "chapter", "booklist", "mulu", "catalog"):
+                candidates.extend(soup.find_all(id=re.compile(name, re.I)))
+                candidates.extend(soup.find_all(class_=re.compile(name, re.I)))
             if not candidates:
                 candidates = [soup]
             links = []
             seen = set()
-            idx = 0
-            for c in candidates:
-                for a in c.find_all("a", href=True):
-                    text = (a.get_text() or "").strip()
-                    href = a.get("href")
-                    if not href or not text:
+            for container in candidates:
+                for item in container.find_all("a", href=True):
+                    title = item.get_text(" ", strip=True)
+                    href = item.get("href")
+                    if not href or not title:
                         continue
                     if not urlparse(href).netloc:
                         href = urljoin(book_url, href)
                     if href in seen:
                         continue
                     seen.add(href)
-                    idx += 1
-                    links.append({"title": text, "url": href, "index": idx})
+                    links.append({"title": title, "url": href, "index": len(links) + 1})
             mark_success(self.name)
             return self._unify(True, links, None)
         except Exception as e:
-            logger.debug("UniversalCrawler.get_chapter_list 失败: %s", e)
+            logger.debug("UniversalCrawler.get_chapter_list failed: %s", e)
             mark_failure(self.name)
             return self._unify(False, None, str(e))
 
     def fetch_chapter(self, chapter_url: str) -> Dict:
         try:
             resp = self.session.get(chapter_url, timeout=self.timeout)
+            resp.raise_for_status()
+            try:
+                resp.encoding = resp.apparent_encoding
+            except Exception:
+                pass
             html = resp.text
-            # trafilatura 优先
+            soup = BeautifulSoup(html, "html.parser")
+            title = (soup.title.string or "").strip() if soup.title else ""
             try:
                 text = trafilatura.extract(html)
                 if text and text.strip():
-                    soup = BeautifulSoup(html, "html.parser")
-                    title = (soup.title.string or "").strip() if soup.title else ""
                     mark_success(self.name)
                     return self._unify(True, {"title": title, "content": text.strip()}, None)
             except Exception:
                 pass
-            soup = BeautifulSoup(html, "html.parser")
-            title = (soup.title.string or "").strip() if soup.title else ""
             content = ""
             for selector in ("#content", ".content", ".read-content", ".chapter-content", "article"):
                 node = soup.select_one(selector)
@@ -198,28 +133,27 @@ class UniversalCrawler(BaseCrawler):
                     content = node.get_text("\n", strip=True)
                     break
             if not content:
-                for s in soup(["script", "style"]):
-                    s.extract()
+                for node in soup(["script", "style"]):
+                    node.extract()
                 content = soup.get_text("\n", strip=True)
             mark_success(self.name)
             return self._unify(True, {"title": title, "content": content}, None)
         except Exception as e:
-            logger.debug("UniversalCrawler.fetch_chapter 失败: %s", e)
+            logger.debug("UniversalCrawler.fetch_chapter failed: %s", e)
             mark_failure(self.name)
             return self._unify(False, None, str(e))
 
     def health_check(self) -> Dict:
         try:
-            t0 = time.time()
-            r = self.session.get("https://www.baidu.com", timeout=self.timeout)
-            latency = time.time() - t0
-            ok = r.status_code == 200
+            started = time.time()
+            resp = self.session.get("https://yandex.com", timeout=self.timeout)
+            latency = time.time() - started
+            ok = resp.status_code < 500
             if ok:
                 mark_success(self.name)
                 return {"ok": True, "latency": latency, "error": None}
-            else:
-                mark_failure(self.name)
-                return {"ok": False, "latency": latency, "error": f"status {r.status_code}"}
+            mark_failure(self.name)
+            return {"ok": False, "latency": latency, "error": f"status {resp.status_code}"}
         except Exception as e:
             mark_failure(self.name)
             return {"ok": False, "latency": 0.0, "error": str(e)}
