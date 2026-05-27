@@ -30,6 +30,28 @@ class UniversalCrawler(BaseCrawler):
     def _unify(self, ok: bool, data: Any = None, error: str | None = None) -> Dict:
         return {"ok": ok, "data": data, "error": error, "source": self.name}
 
+    def _get_response(self, url: str):
+        candidates = [url]
+        parsed = urlparse(url)
+        if parsed.scheme == "https":
+            candidates.append("http://" + parsed.netloc + parsed.path + (f"?{parsed.query}" if parsed.query else ""))
+        last_error: Exception | None = None
+        for candidate in candidates:
+            try:
+                resp = self.session.get(candidate, timeout=self.timeout)
+                resp.raise_for_status()
+                try:
+                    resp.encoding = resp.apparent_encoding
+                except Exception:
+                    pass
+                return resp
+            except Exception as e:
+                last_error = e
+                continue
+        if last_error:
+            raise last_error
+        raise RuntimeError("request failed")
+
     def search(self, keyword: str) -> Dict:
         """先发现小说站，再在这些站点中搜索小说。"""
         if not keyword.strip():
@@ -45,12 +67,7 @@ class UniversalCrawler(BaseCrawler):
 
     def get_book_info(self, book_url: str) -> Dict:
         try:
-            resp = self.session.get(book_url, timeout=self.timeout)
-            resp.raise_for_status()
-            try:
-                resp.encoding = resp.apparent_encoding
-            except Exception:
-                pass
+            resp = self._get_response(book_url)
             soup = BeautifulSoup(resp.text, "html.parser")
             title = (soup.title.string or "").strip() if soup.title else ""
             author = ""
@@ -74,14 +91,12 @@ class UniversalCrawler(BaseCrawler):
 
     def get_chapter_list(self, book_url: str) -> Dict:
         try:
-            resp = self.session.get(book_url, timeout=self.timeout)
-            resp.raise_for_status()
-            try:
-                resp.encoding = resp.apparent_encoding
-            except Exception:
-                pass
+            resp = self._get_response(book_url)
+            base_url = resp.url or book_url
             soup = BeautifulSoup(resp.text, "html.parser")
             candidates = []
+            for selector in ("#list", "#chapterlist", ".chapterlist", ".booklist", ".mulu", ".catalog"):
+                candidates.extend(soup.select(selector))
             for name in ("list", "chapterlist", "chapter", "booklist", "mulu", "catalog"):
                 candidates.extend(soup.find_all(id=re.compile(name, re.I)))
                 candidates.extend(soup.find_all(class_=re.compile(name, re.I)))
@@ -95,12 +110,18 @@ class UniversalCrawler(BaseCrawler):
                     href = item.get("href")
                     if not href or not title:
                         continue
+                    if not self._looks_like_chapter_title(title):
+                        continue
                     if not urlparse(href).netloc:
-                        href = urljoin(book_url, href)
+                        href = urljoin(base_url, href)
                     if href in seen:
                         continue
                     seen.add(href)
                     links.append({"title": title, "url": href, "index": len(links) + 1})
+            if links and any(word in links[0]["title"] for word in ("大结局", "完结", "最后")):
+                links.reverse()
+                for index, chapter in enumerate(links, start=1):
+                    chapter["index"] = index
             mark_success(self.name)
             return self._unify(True, links, None)
         except Exception as e:
@@ -108,14 +129,19 @@ class UniversalCrawler(BaseCrawler):
             mark_failure(self.name)
             return self._unify(False, None, str(e))
 
+    def _looks_like_chapter_title(self, title: str) -> bool:
+        title = title.strip()
+        if not title:
+            return False
+        if re.search(r"第.{1,12}[章节回卷集]", title):
+            return True
+        if any(word in title for word in ("序章", "楔子", "正文", "番外", "大结局")):
+            return True
+        return bool(re.match(r"^\d+[\.\s、_-]", title))
+
     def fetch_chapter(self, chapter_url: str) -> Dict:
         try:
-            resp = self.session.get(chapter_url, timeout=self.timeout)
-            resp.raise_for_status()
-            try:
-                resp.encoding = resp.apparent_encoding
-            except Exception:
-                pass
+            resp = self._get_response(chapter_url)
             html = resp.text
             soup = BeautifulSoup(html, "html.parser")
             title = (soup.title.string or "").strip() if soup.title else ""
