@@ -60,6 +60,7 @@ class FletNovelReader:
         self.books: list[dict[str, Any]] = []
         self.search_results: list[dict[str, Any]] = []
         self.searching = False
+        self.showing_catalog = False
         self.current_book: dict[str, Any] | None = None
         self.current_chapters: list[dict[str, Any]] = []
         self.current_chapter_index = 1
@@ -102,6 +103,7 @@ class FletNovelReader:
                 ft.Row(
                     controls=[
                         ft.IconButton(icon=ICONS.ARROW_BACK, tooltip="上一章", on_click=lambda _: self.prev_chapter()),
+                        ft.IconButton(icon=getattr(ICONS, "LIST", ICONS.MENU_BOOK), tooltip="目录", on_click=lambda _: self.show_catalog()),
                         ft.IconButton(icon=ICONS.ARROW_FORWARD, tooltip="下一章", on_click=lambda _: self.next_chapter()),
                     ]
                 ),
@@ -265,6 +267,8 @@ class FletNovelReader:
     def load_reader(self) -> None:
         if not self.current_book:
             return
+        self.showing_catalog = False
+        self.reader_scroll.controls = [self.reader_title, self.reader_body]
         book_id = int(self.current_book.get("id") or 0)
         if not book_id:
             self.set_status("书籍 ID 无效。", True)
@@ -288,16 +292,47 @@ class FletNovelReader:
         BookService.update_read_progress(book_id, self.current_chapter_index, self.reader_title.value)
         self.set_status("")
 
+    def show_catalog(self) -> None:
+        if not self.current_book:
+            self.set_status("请先选择一本书。", True)
+            return
+        book_id = int(self.current_book.get("id") or 0)
+        if not book_id:
+            self.set_status("书籍 ID 无效。", True)
+            return
+        self.current_chapters = self._get_chapters(book_id)
+        if not self.current_chapters:
+            self.set_status("暂无目录。", True)
+            return
+        self.showing_catalog = True
+        controls = [ft.Text(f"目录：{_title(self.current_book)}", size=20, weight=ft.FontWeight.BOLD)]
+        for chapter in self.current_chapters:
+            chapter_index = int(chapter.get("chapter_index") or chapter.get("index") or len(controls))
+            controls.append(
+                ft.ListTile(
+                    title=ft.Text(str(chapter.get("title") or f"第 {chapter_index} 章")),
+                    on_click=lambda _, idx=chapter_index: self.open_chapter(idx),
+                )
+            )
+        self.reader_scroll.controls = controls
+        self.show_view(2)
+        self.page.update()
+
+    def open_chapter(self, chapter_index: int) -> None:
+        self.current_chapter_index = max(1, int(chapter_index))
+        self.load_reader()
+
     def _get_chapters(self, book_id: int) -> list[dict[str, Any]]:
         resp = ChapterService.list_chapters(book_id)
-        chapters = list(resp.get("data") or []) if resp.get("ok") else []
-        if chapters or not self.current_book:
-            return chapters
+        local_chapters = list(resp.get("data") or []) if resp.get("ok") else []
+        if not self.current_book:
+            return local_chapters
         book_url = _url(self.current_book)
         if not book_url:
-            return []
+            return local_chapters
         chapter_resp = CrawlerService.fetch_chapter_list(book_url)
-        return list(chapter_resp.get("data") or []) if chapter_resp.get("ok") else []
+        remote_chapters = list(chapter_resp.get("data") or []) if chapter_resp.get("ok") else []
+        return remote_chapters or local_chapters
 
     def _get_or_fetch_chapter(self, book_id: int, index: int) -> dict[str, Any] | None:
         local = ChapterService.get_chapter(book_id, index)
