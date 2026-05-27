@@ -226,6 +226,12 @@ class FletNovelReader:
         if not book_url:
             self.set_status("搜索结果缺少书籍地址，无法添加。", True)
             return
+        self.set_status("正在验证书籍章节目录...")
+        chapter_resp = CrawlerService.fetch_chapter_list(book_url)
+        chapters = list(chapter_resp.get("data") or []) if chapter_resp.get("ok") else []
+        if not chapters:
+            self.set_status("这个结果不是可阅读的书籍详情页，已跳过。", True)
+            return
         book_info = {
             "title": _title(result),
             "author": _author(result),
@@ -239,6 +245,7 @@ class FletNovelReader:
         book_id = (resp.get("data") or {}).get("book_id")
         self.load_books()
         book = next((b for b in self.books if b.get("id") == book_id), book_info | {"id": book_id})
+        self.current_chapters = chapters
         self.open_book(book)
 
     def open_book(self, book: dict[str, Any]) -> None:

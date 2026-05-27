@@ -347,6 +347,8 @@ def _extract_book_results(html: str, base_url: str, domain: str, keyword: str) -
             continue
         if domain not in target_domain:
             continue
+        if _looks_like_source_home_or_search(parsed.path, href, title="", keyword=keyword):
+            continue
         if href in seen or _looks_like_noise_url(href):
             continue
         title = link.get_text(" ", strip=True)
@@ -354,6 +356,8 @@ def _extract_book_results(html: str, base_url: str, domain: str, keyword: str) -
             parent = link.find_parent()
             title = parent.get_text(" ", strip=True) if parent else ""
         title = re.sub(r"\s+", " ", title).strip()
+        if _looks_like_source_home_or_search(parsed.path, href, title=title, keyword=keyword):
+            continue
         if not _looks_like_book_result(title, href, keyword):
             continue
         seen.add(href)
@@ -370,13 +374,32 @@ def _extract_book_results(html: str, base_url: str, domain: str, keyword: str) -
 
 
 def _looks_like_book_result(title: str, href: str, keyword: str) -> bool:
-    haystack = f"{title} {unquote(href)}".lower()
-    keyword_lower = keyword.lower()
+    haystack = _compact_text(f"{title} {unquote(href)}")
+    keyword_lower = _compact_text(keyword)
     if keyword_lower and keyword_lower in haystack:
         return True
-    markers = ("book", "novel", "chapter", "read", "txt", "xiaoshuo", "bqg", "biqu", "shu")
+    markers = ("book", "novel", "chapter", "read", "txt", "xiaoshuo", "bqg", "biqu")
     chinese_markers = ("小说", "最新章节", "全文阅读", "章节目录", "无弹窗", "阅读")
-    return any(item in haystack for item in markers) or any(item in title for item in chinese_markers)
+    path = urlparse(href).path.strip("/")
+    has_deep_path = len([part for part in path.split("/") if part]) >= 2
+    has_digits = bool(re.search(r"\d", path))
+    return (has_deep_path or has_digits) and (
+        any(item in haystack for item in markers) or any(item in title for item in chinese_markers)
+    )
+
+
+def _looks_like_source_home_or_search(path: str, href: str, title: str, keyword: str) -> bool:
+    normalized_path = path.strip("/").lower()
+    if not normalized_path:
+        return True
+    generic_parts = ("search", "list", "sort", "category", "top", "rank", "tag", "author", "user")
+    if any(part in normalized_path for part in generic_parts):
+        return _compact_text(keyword) not in _compact_text(f"{title} {unquote(href)}")
+    return False
+
+
+def _compact_text(value: str) -> str:
+    return re.sub(r"\s+", "", value or "").lower()
 
 
 def _looks_like_noise_url(href: str) -> bool:
